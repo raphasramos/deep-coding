@@ -1,0 +1,97 @@
+{
+  "autoencoder": {
+    "input_shape": [64, 32, 32, 3], "recursive": true, "residues": 10,
+    "optimizer": "adam", "lr": 0.0001, "loss": "mse",
+    "same_autoenc": false,
+    "enc_layers": [
+      {"type": "conv2d", "filters": 64, "kernel_size": 3,
+        "strides": 2, "activation": "relu", "padding": "same",
+        "name": "conv0"},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 256, "kernel_size": 3,
+        "strides": 2, "activation": null, "padding": "same",
+        "name": "conv1", "stateful": true},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 512, "kernel_size": 3,
+        "strides": 2, "activation": "relu", "padding": "same",
+        "name": "conv2", "stateful": true},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 512, "kernel_size": 3,
+        "strides": 2, "activation": null, "padding": "same",
+        "name": "conv3", "stateful": true},
+      {"type":  "conv2d", "filters": 32, "kernel_size": 1,
+        "strides": 1, "activation": "relu", "padding": "same",
+        "name": "conv4_bottleneck"},
+      {"type": "quantize", "name": "quantize"}
+    ],
+    "dec_layers": [
+      {"type": "conv2d_transpose", "filters": 512, "kernel_size": 1,
+        "strides": 1, "activation": "relu", "padding": "same",
+        "name": "deconv0"},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 512, "kernel_size": 2,
+        "strides": 1, "activation": null, "padding": "same",
+        "name": "deconv1", "stateful": true},
+      {"type":  "depth_to_space", "block_size": 2},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 512, "kernel_size": 3,
+        "strides": 1, "activation": "relu", "padding": "same",
+        "name": "deconv2", "stateful": true},
+      {"type":  "depth_to_space", "block_size": 2},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 256, "kernel_size": 3,
+        "strides": 1, "activation": null, "padding": "same",
+        "name": "deconv3", "stateful": true},
+      {"type":  "depth_to_space", "block_size": 2},
+      {"type": "expand_dims"},
+      {"type": "conv2d_lstm", "filters": 128, "kernel_size": 3,
+        "strides": 1, "activation": "relu", "padding": "same",
+        "name": "deconv4", "stateful": true},
+      {"type":  "depth_to_space", "block_size": 2},
+      {"type": "conv2d_transpose", "filters": 3, "kernel_size": 1,
+        "strides": 1, "activation": null, "padding": "same",
+        "name": "deconv5"},
+      {"type": "reshape", "target_shape": [32, 32, 3]}
+    ],
+    "gain_net": {
+      "enabled": true, "output_add": 2,
+      "layers": [
+        {"type": "conv2d", "filters": 32, "kernel_size": 3,
+          "strides": 2, "activation": "elu", "padding": "same",
+          "name": "conv0"},
+        {"type": "conv2d", "filters": 32, "kernel_size": 3,
+          "strides": 2, "activation": "elu", "padding": "same",
+          "name": "conv1"},
+        {"type": "conv2d", "filters": 32, "kernel_size": 3,
+          "strides": 2, "activation": "elu", "padding": "same",
+          "name": "conv2"},
+        {"type": "conv2d", "filters": 32, "kernel_size": 3,
+          "strides": 2, "activation": "elu", "padding": "same",
+          "name": "conv3"},
+        {"type": "conv2d", "filters": 1, "kernel_size": 2,
+          "strides": 2, "activation": "elu", "padding": "same",
+          "name": "conv4"}
+        ]
+      }
+  },
+  "run_spec": {
+    "out_folder": "../deep_coding_output",
+    "load": {"residues": 15, "ckpt": null},
+    "codecs": {"jpeg": true, "jpeg2000_kakadu": true},
+    "train_net": true, "test_net": true, "last_epoch": 0, "max_epochs": 1,
+    "generators": {
+      "common": {
+        "net_data_format": "float", "net_color_mode": "RGB"
+      },
+      "train": {"img_range": null, "shuffle_imgs": true,
+        "path": "../extracted_dbs/train"
+      },
+      "valid": {"img_range": null, "shuffle_imgs": false,
+        "path": "../extracted_dbs/valid"
+      },
+      "test": {"img_range": null, "shuffle_imgs": false,
+        "path": "../extracted_dbs/test"
+      }
+    }
+  }
+}
