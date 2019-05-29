@@ -92,6 +92,16 @@ class AutoEnc:
             gen['test'] = Generator(shape, conf['test'])
         return gen
 
+    @staticmethod
+    def update_lr(optimizer, lr):
+        for g in optimizer.param_groups:
+            g['lr'] = lr
+
+    @staticmethod
+    def update_mom(optimizer, mom):
+        for g in optimizer.param_groups:
+            g['momentum'] = mom
+
     def _create_model(self):
         """ This method creates all objects necessary for running a model. """
         st, conf = self.st, self.auto_cfg
@@ -371,10 +381,24 @@ class AutoEnc:
         # Execution of the model
         iter_str = '{:d}/' + str(
             len(data_loader[str(st.exec_mode).lower()])) + ': {}'
+        onecycle = OneCycle(int(len(
+            data_loader[str(st.exec_mode).lower()]) //
+                                         conf['input_shape'][0]), 0.8,
+                                         prcnt=(1 - 82) * 100,
+                                         momentum_vals=(0.95, 0.8))
+
         for batch_idx, (data, _) in enumerate(
                 data_loader[str(st.exec_mode).lower()]):
             if torch.cuda.is_available():
                 data = data.cuda()
+            if conf['lr_politics']['schedule'] == 'one_cycle' \
+                    and st.exec_mode == ExecMode.TRAIN:
+                lr, mom = onecycle.calc()
+                for g in st.autoenc_opt[0].param_groups:
+                    g['lr'] = lr
+                for g in st.autoenc_opt[0].param_groups:
+                    g['momentum'] = mom
+
             # ===================forward=====================
             # Prediction of the model
             output = st.autoenc[0](data)
