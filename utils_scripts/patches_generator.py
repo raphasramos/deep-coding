@@ -144,7 +144,7 @@ def process_and_save_patches(out_path, all_files, patch_size):
         if not curr_dir.exists():
             curr_dir.mkdir()
         names = list(map(
-            lambda n: out_path / curr_dir / ('patch_' + str(n) + '.png'),
+            lambda n: curr_dir / ('patch_' + str(n) + '.png'),
             np.arange(begin, end)))
         save_pool.starmap_async(save_img_from_array, zip(patches, names))
         cont_patches = end
