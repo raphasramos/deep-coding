@@ -75,7 +75,7 @@ def _load_task(img_queue, files_list):
     pool.join()
 
 
-def pad_img(img, patch_size, padding_method='edge'):
+def pad_img(img, patch_size, padding_method='symmetric'):
     """ Method that receives an image and a size for the patches. The method
         pad the image so that they can be cropped later
     """
@@ -122,7 +122,7 @@ def _verify_out_path(out_path):
 
 def process_and_save_patches(out_path, all_files, patch_size):
     """ Function that processes and saves the patches from the images """
-    img_queue = Queue(100)
+    img_queue = Queue(150)
     load_proc = Process(target=_load_task, args=(img_queue, all_files))
     load_proc.start()
     save_pool = ThreadPool()
