@@ -1,6 +1,4 @@
-""" File containing the implementation of generators of data from images
-    slicing them into patches
-"""
+""" File containing the implementation of data loaders from images """
 
 from .processing import ImgProc
 

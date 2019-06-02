@@ -5,12 +5,11 @@
     "lr_politics": {"optimizer": "adam", "lr": 0.0001, "schedule": null}
   },
   "run_spec": {
-    "queue_size": 140, "workers": 1, "out_folder": "../output/run",
-    "shuffle": false,
+    "queue_size": 1000, "workers": 7, "out_folder": "../output/run",
+    "epochs": 1,
     "generators": {
-      "train": {"enabled": true, "path": "../datasets/eduardo/"},
-      "valid": {"path": "../datasets/eduardo"},
-      "test": {"enabled": true, "path": "../datasets/eduardo"}
+      "train": {"enabled": true, "path": "../datasets/fast"},
+      "test": {"enabled": true, "path": "../datasets/fast"}
     }
   }
 }

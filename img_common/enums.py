@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.optim as optim
 from skimage.measure import compare_psnr, compare_ssim
 from .msssim import MSSSIM
+from .lr_schedules import *
+
 
 class Folders(IntEnum):
     """ Enum representing the names of the folders for output """
@@ -82,10 +84,32 @@ class ImgData(Enum):
 
 class Optimizers(Enum):
     """ Enum represeting the acceptable optimizers """
-    ADAM = partial(lambda lr, param: optim.Adam(param, lr=lr,
-                                                weight_decay=1e-4, amsgrad=True))
-    SGD = partial(lambda lr, param: optim.SGD(param, lr=lr, weight_decay=1e-4,
-                                              momentum=0.95))
+    ADAM = partial(lambda param, lr: optim.Adam(param, lr=lr, amsgrad=True))
+    SGD = partial(lambda param, lr: optim.SGD(param, lr=lr, momentum=0.95))
+
+    def __str__(self):
+        return self.name.lower()
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.__members__[value.upper()]
+
+
+class Schedules(Enum):
+    CONSTANT = partial(lambda lr, itr, epochs: CLR(
+        base_lr=lr, max_lr=lr, mode='triangular', step_size=2000))
+    TRIANGULAR = partial(lambda lr, itr, epochs: CLR(
+        base_lr=lr, max_lr=4*lr, mode='triangular', step_size=max(1, itr//30)
+        if epochs <= 2 else 4*itr))
+    TRIANGULAR2 = partial(lambda lr, itr, epochs: CLR(
+        base_lr=lr, max_lr=7*lr, mode='triangular2', step_size=max(1, itr//35)
+        if epochs <= 2 else 4*itr))
+    EXP_RANGE = partial(lambda lr, itr, epochs: CLR(
+        base_lr=lr, max_lr=5*lr, mode='exp_range', step_size=max(1, itr//40)
+        if epochs <= 2 else 4*itr))
+    ONE_CYCLE = partial(lambda lr, itr, epochs: OneCycle(
+        total=itr, max_lr=10*lr, momentum_vals=(0.95, 0.85),
+        prct=(epochs - 82) * 100/epochs))
 
     def __str__(self):
         return self.name.lower()

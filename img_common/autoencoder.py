@@ -20,25 +20,21 @@ import gc
 
 from .generator import Generator
 from .enums import *
-from .one_cycle import *
 from .processing import ImgProc
 from traceback import print_exc
 
 CURSOR_UP_ONE = '\x1b[1A'
 ERASE_LINE = '\x1b[2K'
 
-
-# TODO: calculate bpp
-# TODO: add validation
-# TODO: add learning rate schedules
 # TODO: use pytorch multiprocessing
+# TODO: add validation
 # TODO: add gain_net
+
+
 class AutoEnc:
     """ Class representing the image autoencoders. It has all methods necessary
         to operate with them.
     """
-    ckpt_file_pattern = "vloss{:.4g}.ckpt"
-
     class State:
         """ Class with useful information about the current execution of the
             autoencoder. It provides the information of the instantiated model
@@ -46,18 +42,16 @@ class AutoEnc:
         """
 
         def __init__(self, exec_mode=ExecMode.TRAIN):
-            self.global_step = []
-            self.step = None
             self.autoenc_opt = []
+            self.opt_schedules = []
             self.exec_mode = exec_mode
             self.out_type = None
             self.autoenc = []
             self.loss = None
-            self.ckpt = None
             self.out_queue = None
+            self.device = None
 
-    def __init__(self, autoencoder_conf, run_conf, queue_mem=0.1):
-        self._queue_mem = queue_mem
+    def __init__(self, autoencoder_conf, run_conf):
         self.auto_cfg = autoencoder_conf.copy()
         self.run_cfg = run_conf.copy()
         self.st = None
@@ -69,8 +63,6 @@ class AutoEnc:
             cnt += 1
         out.mkdir(parents=True, exist_ok=True)
         self.out_name = out
-        self.ckpt_path_pattern = str(
-            self.out_name / str(Folders.CHECKPOINTS) / self.ckpt_file_pattern)
 
     @staticmethod
     def _clear_last_lines(n=1):
@@ -82,29 +74,34 @@ class AutoEnc:
     def _instantiate_generators(self):
         """ Method to instantiate generator objects """
         shape = self.auto_cfg['input_shape']
-        conf = self.run_cfg['generators']
+        run = self.run_cfg['generators']
         gen = {}
+        img_transform = transforms.Compose([transforms.ToPILImage()])
+        data_transforms = {
+            'train': transforms.Compose([transforms.ToTensor()]),
+            'test': transforms.Compose([transforms.ToTensor()])
+        }
+        images = {
+            'train': ImageFolder(root=run['train']['path'],
+                                 transform=data_transforms['train']),
+            'test': ImageFolder(root=run['test']['path'],
+                                transform=data_transforms['test'])
+        }
+        data_loader = {
+            'train': DataLoader(images['train'], batch_size=shape[0],
+                                num_workers=self.run_cfg['workers']),
+            'test': DataLoader(images['test'], batch_size=shape[0],
+                               num_workers=self.run_cfg['workers'])
+        }
 
-        if conf['train']['enabled']:
-            gen['train'] = Generator(shape, conf['train'])
-            gen['valid'] = Generator(shape, conf['valid'])
-        if conf['test']['enabled']:
-            gen['test'] = Generator(shape, conf['test'])
+        gen['train'] = Generator(shape, run['train']), data_loader['train']
+        gen['test'] = Generator(shape, run['test']), data_loader['test']
+        gen['img'] = img_transform
         return gen
-
-    @staticmethod
-    def update_lr(optimizer, lr):
-        for g in optimizer.param_groups:
-            g['lr'] = lr
-
-    @staticmethod
-    def update_mom(optimizer, mom):
-        for g in optimizer.param_groups:
-            g['momentum'] = mom
 
     def _create_model(self):
         """ This method creates all objects necessary for running a model. """
-        st, conf = self.st, self.auto_cfg
+        st, conf, run = self.st, self.auto_cfg, self.run_cfg
 
         class AutoEncoder(nn.Module):
             def __init__(self):
@@ -129,12 +126,19 @@ class AutoEnc:
                 return x
 
         model = AutoEncoder()
-        if torch.cuda.is_available():
-            model = model.cuda()
+        self.device = torch.device(
+            "cuda:0" if torch.cuda.is_available() else "cpu")
+        model = model.to(self.device)
         st.autoenc.append(model)
+
         optimizer = Optimizers(conf['lr_politics']['optimizer']).value
-        learning_rate = conf['lr_politics']['lr']
-        st.autoenc_opt.append(optimizer(learning_rate, model.parameters()))
+        schedules = Schedules(conf['lr_politics']['schedule']).value \
+            if conf['lr_politics']['schedule'] else Schedules('constant').value
+        st.opt_schedules.append(schedules(
+            conf['lr_politics']['lr'],
+            len(self.generators[str(st.exec_mode)][1]), run['epochs']))
+        st.autoenc_opt.append(optimizer(model.parameters(),
+                                        conf['lr_politics']['lr']))
         st.loss = Losses(conf['loss']).value
 
     @staticmethod
@@ -239,7 +243,7 @@ class AutoEnc:
     def _handle_output(self):
         """ Routine executed to handle the output of the model """
         setproctitle('python3 - _handle_output')
-        gen = self.generators[str(self.st.exec_mode)]
+        gen = self.generators[str(self.st.exec_mode)][0]
         out_folder = self._create_out_folder()
         img_pathnames = list(gen.get_db_files_pathnames())
         pools, bpps, metrics = self._instantiate_shared_variables(
@@ -249,14 +253,13 @@ class AutoEnc:
             # TODO: the collector doesn't work if called later. The memory is
             #  not release by python. Investigate why. It would be good to call
             #  it less frequently.
-            if img_num % 5 == 0:
+            if img_num % 100 == 0:
                 gc.collect()
             model_data = self.st.out_queue.get()
             patches = model_data
             AutoEnc._codecs_out_routines(pools, img, img_num, bpps, metrics,
                                          model_data, patches,
                                          out_folder)
-
         list(map(lambda p: p.close(), pools))
         list(map(lambda p: p.join(), pools))
         AutoEnc._save_out_analysis(img_pathnames, out_folder, bpps, metrics)
@@ -343,96 +346,89 @@ class AutoEnc:
         save_name = save_folder / new_name
         return save_name
 
-    def _run_model(self):
-        """ Generic function that executes the current model based on the
-            parameters passed
-        """
-        setproctitle('python3 - _run_model')
+    def _update_opt(self):
+        lr, mom = self.st.opt_schedules[0].calc()
+        param_groups = self.st.autoenc_opt[0].defaults
+        param_groups['lr'] = lr
+        if 'mom' in param_groups:
+            param_groups['mom'] = mom
+
+    def _train(self):
+        """ Function that trains the model. """
+        setproctitle('python3 - _train')
         st, conf, run = self.st, self.auto_cfg, self.run_cfg
+        gen = self.generators[str(st.exec_mode)][1]
 
-        if st.exec_mode:
-            st.out_queue = Manager().Queue(run['queue_size'])
-            patch_proc = Process(target=AutoEnc._handle_output, args=(self,))
-            patch_proc.start()
-
-        img_transform = transforms.Compose([transforms.ToPILImage()])
-        data_transforms = {
-            'train': transforms.Compose([transforms.ToTensor()]),
-            'valid': transforms.Compose([transforms.ToTensor()]),
-            'test': transforms.Compose([transforms.ToTensor()])
-        }
-        images = {
-            'train': ImageFolder(root=run['generators']
-            ['train']['path'], transform=data_transforms['train']),
-            'valid': ImageFolder(root=run['generators']
-            ['valid']['path'], transform=data_transforms['valid']),
-            'test': ImageFolder(root=run['generators']
-            ['test']['path'], transform=data_transforms['test'])
-        }
-        data_loader = {
-            'train': DataLoader(images['train'], batch_size=
-            conf['input_shape'][0], num_workers=run['workers'],
-                                shuffle=run['shuffle']),
-            'valid': DataLoader(images['valid'], batch_size=
-            conf['input_shape'][0], num_workers=run['workers']),
-            'test': DataLoader(images['test'], batch_size=
-            conf['input_shape'][0], num_workers=run['workers'])
-        }
+        epochs = run['epochs']
         # Execution of the model
-        iter_str = '{:d}/' + str(
-            len(data_loader[str(st.exec_mode).lower()])) + ': {}'
-        onecycle = OneCycle(int(len(
-            data_loader[str(st.exec_mode).lower()]) //
-                                         conf['input_shape'][0]), 0.8,
-                                         prcnt=(1 - 82) * 100,
-                                         momentum_vals=(0.95, 0.8))
+        iter_str = '{:d}/' + str(len(gen)) + ': {}'
+        mean_loss = 0.
+        for x in range(epochs):
+            print('Epoch {}/{}'.format(x + 1, epochs))
+            print('-' * 10)
+            for batch_idx, (data, _) in enumerate(gen):
+                data = data.to(self.device)
+                # ===================forward=====================
+                # Prediction of the model
+                output = st.autoenc[0](data)
+                # ===================backward=====================
+                # Backward pass:compute gradient of the loss with respect to all
+                # the learnable parameters of the model.
+                # Zero the gradients before running the backward pass
+                st.autoenc_opt[0].zero_grad()
+                # Compute loss
+                loss = st.loss(output, data)
+                # Update optimizer's parameters
+                loss.backward()
+                st.autoenc_opt[0].step()
+                self._update_opt()
+                print(iter_str.format(batch_idx + 1, str(loss.item())))
+                AutoEnc._clear_last_lines()
+                mean_loss += loss.item()
+            mean_loss /= len(gen)
+            AutoEnc._clear_last_lines(n=2)
+        print("Avg loss: {}".format(mean_loss / epochs))
+        st.autoenc_opt[0].defaults['lr'] = conf['lr_politics']['lr']
 
-        for batch_idx, (data, _) in enumerate(
-                data_loader[str(st.exec_mode).lower()]):
-            if torch.cuda.is_available():
-                data = data.cuda()
-            if conf['lr_politics']['schedule'] == 'one_cycle' \
-                    and st.exec_mode == ExecMode.TRAIN:
-                lr, mom = onecycle.calc()
-                for g in st.autoenc_opt[0].param_groups:
-                    g['lr'] = lr
-                for g in st.autoenc_opt[0].param_groups:
-                    g['momentum'] = mom
+    def _test(self):
+        """ Function that tests the model. """
+        setproctitle('python3 - _test')
+        st, conf, run = self.st, self.auto_cfg, self.run_cfg
+        gen = self.generators[str(st.exec_mode)][1]
 
-            # ===================forward=====================
+        st.out_queue = Manager().Queue(run['queue_size'])
+        patch_proc = Process(target=AutoEnc._handle_output, args=(self,))
+        patch_proc.start()
+
+        # Execution of the model
+        iter_str = '{:d}/' + str(len(gen)) + ': {}'
+        mean_loss = 0.
+        for batch_idx, (data, _) in enumerate(gen):
+            data = data.to(self.device)
             # Prediction of the model
             output = st.autoenc[0](data)
-            # ===================backward=====================
-            # Backward pass: compute gradient of the loss with respect to all
-            # the learnable parameters of the model.
-            # Zero the gradients before running the backward pass
             st.autoenc_opt[0].zero_grad()
             # Compute loss
             loss = st.loss(output, data)
-            # Update optimizer's parameters
-            if st.exec_mode == ExecMode.TRAIN:
-                loss.backward()
-                st.autoenc_opt[0].step()
-            print(iter_str.format(batch_idx+1, str(loss.item())))
+            print(iter_str.format(batch_idx + 1, str(loss.item())))
             AutoEnc._clear_last_lines()
-            if st.exec_mode:
-                for j in range(output.size()[0]):
-                    st.out_queue.put(np.array(img_transform
-                                              (output.cpu().data[j])))
-        if st.exec_mode:
-            patch_proc.join()
+            for j in range(output.size()[0]):
+                st.out_queue.put(np.array(
+                    self.generators['img'](output.cpu().data[j])))
+            mean_loss += loss.item()
+        mean_loss /= len(gen)
+        print("Avg loss: {}".format(mean_loss))
+        patch_proc.join()
 
     def test_model(self):
         """ Evaluate the eager model for validation or testing """
         if not self.st:
             self.st = self.State(exec_mode=ExecMode.TEST)
             self._create_model()
-        self.st.epoch_str = ''
+        print('\nTESTING:')
         self.st.exec_mode = ExecMode.TEST
         self.st.out_type = OutputType.RECONSTRUCTION
-
-        print('\nTESTING:')
-        self._run_model()
+        self._test()
 
     # TODO: incorporate possibility of validation steps between iterations
     def train_model(self):
@@ -442,4 +438,4 @@ class AutoEnc:
         print('\nTRAINING:')
         self.st.exec_mode = ExecMode.TRAIN
         self.st.out_type = OutputType.NONE
-        self._run_model()
+        self._train()
