@@ -97,6 +97,7 @@ def extract_img_patches(img, patch_size):
         color = padded_img.shape[2]
     patches = view_as_blocks(padded_img, (patch_size, patch_size, color))
     patches = patches.reshape(-1, patch_size, patch_size, color)
+    np.random.shuffle(patches)
     return patches
 
 
