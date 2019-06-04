@@ -365,17 +365,17 @@ class AutoEnc:
         mean_loss = 0.
         for x in range(epochs):
             print('Epoch {}/{}'.format(x + 1, epochs))
-            print('-' * 10)
+            print('-' * 50)
             for batch_idx, (data, _) in enumerate(gen):
                 data = data.to(self.device)
+                # Zero the gradients
+                st.autoenc_opt[0].zero_grad()
                 # ===================forward=====================
                 # Prediction of the model
                 output = st.autoenc[0](data)
                 # ===================backward=====================
                 # Backward pass:compute gradient of the loss with respect to all
                 # the learnable parameters of the model.
-                # Zero the gradients before running the backward pass
-                st.autoenc_opt[0].zero_grad()
                 # Compute loss
                 loss = st.loss(output, data)
                 # Update optimizer's parameters
@@ -407,7 +407,6 @@ class AutoEnc:
             data = data.to(self.device)
             # Prediction of the model
             output = st.autoenc[0](data)
-            st.autoenc_opt[0].zero_grad()
             # Compute loss
             loss = st.loss(output, data)
             print(iter_str.format(batch_idx + 1, str(loss.item())))
