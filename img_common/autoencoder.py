@@ -363,6 +363,7 @@ class AutoEnc:
         # Execution of the model
         iter_str = '{:d}/' + str(len(gen)) + ': {}'
         mean_loss = 0.
+        st.autoenc[0].train()
         for x in range(epochs):
             print('Epoch {}/{}'.format(x + 1, epochs))
             print('-' * 50)
@@ -403,6 +404,7 @@ class AutoEnc:
         # Execution of the model
         iter_str = '{:d}/' + str(len(gen)) + ': {}'
         mean_loss = 0.
+        st.autoenc[0].eval()
         for batch_idx, (data, _) in enumerate(gen):
             data = data.to(self.device)
             # Prediction of the model
