@@ -20,14 +20,19 @@ import gc
 
 from .generator import Generator
 from .enums import *
+from .torch_custom import *
 from .processing import ImgProc
 from traceback import print_exc
 
 CURSOR_UP_ONE = '\x1b[1A'
 ERASE_LINE = '\x1b[2K'
 
+# TODO: add validation between epochs and checkpoint for models
+# TODO: add pytorch's schedules
 # TODO: use pytorch multiprocessing
-# TODO: add validation
+# TODO: create custom data loader
+# TODO: put all the batch on the Queue in order to improve GZIP's compression
+# TODO: add more than one residue possibility for the reconstruction framework
 # TODO: add gain_net
 
 
@@ -111,6 +116,7 @@ class AutoEnc:
                     nn.ReLU(),
                     nn.Conv2d(256, 128, 5, 2, 2)
                 )
+                self.bin = Binarizer()
                 self.decoder = nn.Sequential(
                     nn.ConvTranspose2d(128, 64, 2, 2),
                     nn.ReLU(),
@@ -122,8 +128,9 @@ class AutoEnc:
 
             def forward(self, x):
                 x = self.encoder(x)
-                x = self.decoder(x)
-                return x
+                b = self.bin(x)
+                x = self.decoder(b)
+                return x, b.clamp(0, 1)
 
         model = AutoEncoder()
         self.device = torch.device(
@@ -201,12 +208,12 @@ class AutoEnc:
 
     @staticmethod
     def _codecs_out_routines(pools, path, img_num, bpps, metrics,
-                             data, patches, out_folder):
+                             latents, patches, out_folder):
         """ Auxiliary function of _handle_output. It does all routines necessary
             to the outputs and analysis of the codecs
         """
         pools[0].apply_async(ImgProc.calc_bpp_using_gzip,
-                             (data, path, bpps[Codecs.NET], img_num))
+                             (latents, path, bpps[Codecs.NET], img_num))
         pools[1].apply_async(AutoEnc._save_imgs_from_patches,
                              (path, out_folder, patches, bpps[Codecs.NET],
                               metrics[Codecs.NET], img_num))
@@ -255,11 +262,10 @@ class AutoEnc:
             #  it less frequently.
             if img_num % 100 == 0:
                 gc.collect()
-            model_data = self.st.out_queue.get()
-            patches = model_data
+            data = self.st.out_queue.get()
+            model_data, latents = data[0], data[1]
             AutoEnc._codecs_out_routines(pools, img, img_num, bpps, metrics,
-                                         model_data, patches,
-                                         out_folder)
+                                         latents, model_data, out_folder)
         list(map(lambda p: p.close(), pools))
         list(map(lambda p: p.join(), pools))
         AutoEnc._save_out_analysis(img_pathnames, out_folder, bpps, metrics)
@@ -373,7 +379,7 @@ class AutoEnc:
                 st.autoenc_opt[0].zero_grad()
                 # ===================forward=====================
                 # Prediction of the model
-                output = st.autoenc[0](data)
+                output, _ = st.autoenc[0](data)
                 # ===================backward=====================
                 # Backward pass:compute gradient of the loss with respect to all
                 # the learnable parameters of the model.
@@ -408,14 +414,16 @@ class AutoEnc:
         for batch_idx, (data, _) in enumerate(gen):
             data = data.to(self.device)
             # Prediction of the model
-            output = st.autoenc[0](data)
+            output, latents = st.autoenc[0](data)
             # Compute loss
             loss = st.loss(output, data)
             print(iter_str.format(batch_idx + 1, str(loss.item())))
             AutoEnc._clear_last_lines()
             for j in range(output.size()[0]):
-                st.out_queue.put(np.array(
-                    self.generators['img'](output.cpu().data[j])))
+                put = [np.array(
+                    self.generators['img'](output.cpu().data[j]))] + \
+                      [latents.cpu().data[j].numpy()]
+                st.out_queue.put(put)
             mean_loss += loss.item()
         mean_loss /= len(gen)
         print("Avg loss: {}".format(mean_loss))
@@ -431,7 +439,6 @@ class AutoEnc:
         self.st.out_type = OutputType.RECONSTRUCTION
         self._test()
 
-    # TODO: incorporate possibility of validation steps between iterations
     def train_model(self):
         """ Train the model using the eager execution """
         self.st = self.State()

@@ -1,3 +1,5 @@
+""" File containing implementation of some learning rate schedules """
+
 import numpy as np
 
 
