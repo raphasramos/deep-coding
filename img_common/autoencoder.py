@@ -17,6 +17,7 @@ from setproctitle import setproctitle
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 import gc
+import copy
 
 from .generator import Generator
 from .enums import *
@@ -27,9 +28,10 @@ from traceback import print_exc
 CURSOR_UP_ONE = '\x1b[1A'
 ERASE_LINE = '\x1b[2K'
 
-# TODO: add validation between epochs and checkpoint for models
+# TODO: add checkpoint for models
 # TODO: add pytorch's schedules
 # TODO: use pytorch multiprocessing
+# TODO: use experimental tensorboard
 # TODO: create custom data loader
 # TODO: put all the batch on the Queue in order to improve GZIP's compression
 # TODO: add more than one residue possibility for the reconstruction framework
@@ -84,22 +86,28 @@ class AutoEnc:
         img_transform = transforms.Compose([transforms.ToPILImage()])
         data_transforms = {
             'train': transforms.Compose([transforms.ToTensor()]),
+            'valid': transforms.Compose([transforms.ToTensor()]),
             'test': transforms.Compose([transforms.ToTensor()])
         }
         images = {
             'train': ImageFolder(root=run['train']['path'],
                                  transform=data_transforms['train']),
+            'valid': ImageFolder(root=run['valid']['path'],
+                                 transform=data_transforms['valid']),
             'test': ImageFolder(root=run['test']['path'],
                                 transform=data_transforms['test'])
         }
         data_loader = {
             'train': DataLoader(images['train'], batch_size=shape[0],
                                 num_workers=self.run_cfg['workers']),
+            'valid': DataLoader(images['valid'], batch_size=shape[0],
+                                num_workers=self.run_cfg['workers']),
             'test': DataLoader(images['test'], batch_size=shape[0],
                                num_workers=self.run_cfg['workers'])
         }
 
         gen['train'] = Generator(shape, run['train']), data_loader['train']
+        gen['valid'] = Generator(shape, run['valid']), data_loader['valid']
         gen['test'] = Generator(shape, run['test']), data_loader['test']
         gen['img'] = img_transform
         return gen
@@ -359,43 +367,69 @@ class AutoEnc:
         if 'mom' in param_groups:
             param_groups['mom'] = mom
 
-    def _train(self):
-        """ Function that trains the model. """
-        setproctitle('python3 - _train')
-        st, conf, run = self.st, self.auto_cfg, self.run_cfg
-        gen = self.generators[str(st.exec_mode)][1]
+    def _train_loop(self, data, phase):
+        st = self.st
 
-        epochs = run['epochs']
-        # Execution of the model
-        iter_str = '{:d}/' + str(len(gen)) + ': {}'
-        mean_loss = 0.
-        st.autoenc[0].train()
-        for x in range(epochs):
-            print('Epoch {}/{}'.format(x + 1, epochs))
-            print('-' * 50)
-            for batch_idx, (data, _) in enumerate(gen):
-                data = data.to(self.device)
-                # Zero the gradients
-                st.autoenc_opt[0].zero_grad()
-                # ===================forward=====================
-                # Prediction of the model
-                output, _ = st.autoenc[0](data)
-                # ===================backward=====================
-                # Backward pass:compute gradient of the loss with respect to all
-                # the learnable parameters of the model.
-                # Compute loss
-                loss = st.loss(output, data)
-                # Update optimizer's parameters
+        data = data.to(self.device)
+        # Zero the gradients
+        st.autoenc_opt[0].zero_grad()
+        # ===================forward=====================
+        # track history if only in train
+        with torch.set_grad_enabled(phase == 'train'):
+            # Prediction of the model
+            output, _ = st.autoenc[0](data)
+            # ===================backward=====================
+            # Compute loss
+            loss = st.loss(output, data)
+            # Backward pass: compute gradient of the loss with
+            # respect to all the learnable parameters of the model.
+            # Update optimizer's parameters
+            if phase == 'train':
                 loss.backward()
                 st.autoenc_opt[0].step()
                 self._update_opt()
-                print(iter_str.format(batch_idx + 1, str(loss.item())))
-                AutoEnc._clear_last_lines()
-                mean_loss += loss.item()
-            mean_loss /= len(gen)
-            AutoEnc._clear_last_lines(n=2)
-        print("Avg loss: {}".format(mean_loss / epochs))
-        st.autoenc_opt[0].defaults['lr'] = conf['lr_politics']['lr']
+        return loss
+
+    def _train(self):
+        """ Function that trains the model. """
+        setproctitle('python3 - _train')
+        st = self.st
+        gen = self.generators[str(st.exec_mode)][1]
+
+        epochs = self.run_cfg['epochs']
+        # Execution of the model
+        iter_str = '{:d}/' + str(len(gen)) + ': {}'
+        best_loss, total_loss = 1e5, 0.
+        best_model_wts = copy.deepcopy(st.autoenc[0].state_dict())
+        for x in range(epochs):
+            print('Epoch {}/{}'.format(x + 1, epochs))
+            print('-' * 50)
+            mean_loss, val_loss = 0., 0.
+            for phase in ['train', 'valid']:
+                if phase == 'train':
+                    print('TRAINING:')
+                    total_loss -= val_loss/len(gen)
+                    val_loss = 1e6
+                    st.autoenc[0].train()
+                else:
+                    print('VALIDATING:')
+                    val_loss = 0.
+                    st.autoenc[0].eval()
+                for batch_idx, (data, _) in enumerate(gen):
+                    loss = self._train_loop(data, phase)
+                    print(iter_str.format(batch_idx + 1, str(loss.item())))
+                    AutoEnc._clear_last_lines()
+                    mean_loss += loss.item()
+                    val_loss += loss.item()
+                if val_loss < best_loss:
+                    best_loss = copy.deepcopy(val_loss)
+                    best_model_wts = copy.deepcopy(st.autoenc[0].state_dict())
+                total_loss += mean_loss / len(gen)
+                AutoEnc._clear_last_lines(n=2)
+        print("Avg training loss: {}\nBest val loss: {}".format(
+            total_loss / epochs, best_loss / len(gen)))
+        st.autoenc_opt[0].defaults['lr'] = self.auto_cfg['lr_politics']['lr']
+        st.autoenc[0].load_state_dict(best_model_wts)
 
     def _test(self):
         """ Function that tests the model. """
@@ -443,7 +477,6 @@ class AutoEnc:
         """ Train the model using the eager execution """
         self.st = self.State()
         self._create_model()
-        print('\nTRAINING:')
         self.st.exec_mode = ExecMode.TRAIN
         self.st.out_type = OutputType.NONE
         self._train()
