@@ -134,6 +134,7 @@ class ImgProc:
             pixels_num = np.prod(ImgProc.get_size(orig_pathname))
             # Bits has many representations. length get the len in bits
             bpp_proxy[pos] = [Bits(compressed).length / pixels_num]
+            del img
         except Exception as e:
             print("calc_bpp_using_gzip: " + str(e), end='\n\n')
 

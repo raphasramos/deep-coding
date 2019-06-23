@@ -5,24 +5,19 @@ import numpy as np
 
 class CLR(object):
     """
-    The method is described in paper : https://arxiv.org/abs/1506.01186 to find
-    out optimum learning rate. The learning rate is increased from lower value
-    to higher per iteration for some iterations till loss starts exploding. The
-    learning rate one power lower than the one where loss is minimum is chosen
-    as optimum learning rate for training.
+    The method is described in paper : https://arxiv.org/abs/1506.01186.
+    The method cycles the learning rate between two boundaries with some
+    constant frequency.
     Args:
         opt     Optimizer used in training.
-        itr     Total number of iterations used for this test run.
-                The learning rate increasing factor is calculated based on this
+        itr     The learning rate increasing factor is calculated based on this
                 iteration number.
         base_lr The lower boundary for learning rate which will be used as
                 initial learning rate during test run. It is adviced to start
                 from small learning rate value like 1e-4.
                 Default value is 1e-5
         max_lr  The upper boundary for learning rate. This value defines
-                amplitude for learning rate increase(max_lr-base_lr). max_lr
-                value may not be reached in test run as loss may explode before
-                reaching max_lr. It is adviced to use 10*base_lr.
+                amplitude for learning rate increase(max_lr-base_lr).
     """
 
     def __init__(self, base_lr, max_lr, mode, step_size=2000, gamma=0.99994):

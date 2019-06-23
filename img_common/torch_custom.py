@@ -15,8 +15,8 @@ class Noise(Function):
         if is_training:
             prob = inpt.new(inpt.size()).uniform_()
             x = inpt.clone()
-            x[(1 - inpt) / 2 <= prob] = 1
-            x[(1 - inpt) / 2 > prob] = -1
+            x[(1 - inpt)/2 <= prob] = 1
+            x[(1 - inpt)/2 > prob] = -1
             return x
         else:
             return inpt.sign()
@@ -40,14 +40,14 @@ class Binarizer(nn.Module):
     """ Torch Layer that implements binarization as in Toderici's article:
     Variable Rate Image Compression with Recurrent Neural Networks
     https://arxiv.org/abs/1511.06085.
-    There's no stochasticity as proposed in that work.
     """
     def __init__(self):
         super(Binarizer, self).__init__()
-        self.conv = nn.Conv2d(128, 128, 1, bias=False)
+        self.conv = nn.Conv2d(512, 32, kernel_size=1)
+        self.act = nn.ReLU()
         self.sign = Sign()
 
     def forward(self, x):
-        feat = self.conv(x)
-        x = torch.tanh(feat)
+        x = self.conv(x)
+        x = torch.tanh(x)
         return self.sign(x)

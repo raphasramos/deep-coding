@@ -33,10 +33,8 @@ class ExecMode(IntEnum):
 class Metrics(Enum):
     """ Enum representing the metrics used for comparison """
     PSNR = 0, partial(compare_psnr)
-    SSIM = 1, partial(lambda x, y:
-                      -10 * np.log10(1 - compare_ssim(x, y, multichannel=True)))
-    MSSSIM = 2, partial(lambda x, y:
-                        -10 * np.log10(1 - MSSSIM.compare_msssim(x, y)))
+    SSIM = 1, partial(lambda x, y: compare_ssim(x, y, multichannel=True))
+    MSSSIM = 2, partial(MSSSIM.compare_msssim)
 
     def __new__(cls, value, func):
         member = object.__new__(cls)
@@ -97,16 +95,16 @@ class Optimizers(Enum):
 
 class Schedules(Enum):
     CONSTANT = partial(lambda lr, itr, epochs: CLR(
-        base_lr=lr, max_lr=lr, mode='triangular', step_size=2000))
+        base_lr=lr, max_lr=lr, mode='triangular', step_size=2000000))
     TRIANGULAR = partial(lambda lr, itr, epochs: CLR(
         base_lr=lr, max_lr=4*lr, mode='triangular', step_size=max(1, itr//30)
-        if epochs <= 3 else 2*itr))
+        if epochs <= 3 else 5*itr))
     TRIANGULAR2 = partial(lambda lr, itr, epochs: CLR(
         base_lr=lr, max_lr=7*lr, mode='triangular2', step_size=max(1, itr//35)
-        if epochs <= 3 else 2*itr))
+        if epochs <= 3 else 5*itr))
     EXP_RANGE = partial(lambda lr, itr, epochs: CLR(
         base_lr=lr, max_lr=5*lr, mode='exp_range', step_size=max(1, itr//40)
-        if epochs <= 3 else 2*itr))
+        if epochs <= 3 else 5*itr))
     ONE_CYCLE = partial(lambda lr, itr, epochs: OneCycle(
         total=itr, max_lr=10*lr, momentum_vals=(0.95, 0.85),
         prct=(epochs - 82) * 100/epochs))
