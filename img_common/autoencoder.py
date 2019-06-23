@@ -27,12 +27,11 @@ from traceback import print_exc
 CURSOR_UP_ONE = '\x1b[1A'
 ERASE_LINE = '\x1b[2K'
 
-# TODO: add validation between epochs and checkpoint for models
+# TODO: add checkpoint for models
 # TODO: add pytorch's schedules
-# TODO: use pytorch multiprocessing
+# TODO: use pytorch's multiprocessing
 # TODO: create custom data loader
 # TODO: put all the batch on the Queue in order to improve GZIP's compression
-# TODO: add more than one residue possibility for the reconstruction framework
 # TODO: add gain_net
 
 
@@ -81,7 +80,9 @@ class AutoEnc:
         shape = self.auto_cfg['input_shape']
         run = self.run_cfg['generators']
         gen = {}
-        img_transform = transforms.Compose([transforms.ToPILImage()])
+        img_transform = transforms.Compose([transforms.ToPILImage(),
+                                            transforms.RandomHorizontalFlip(),
+                                            transforms.RandomPerspective()])
         data_transforms = {
             'train': transforms.Compose([transforms.ToTensor()]),
             'test': transforms.Compose([transforms.ToTensor()])
@@ -112,17 +113,21 @@ class AutoEnc:
             def __init__(self):
                 super(AutoEncoder, self).__init__()
                 self.encoder = nn.Sequential(
-                    nn.Conv2d(3, 256, 5, 2, 2),
+                    nn.Conv2d(3, 64, 3, 2, 1),
                     nn.ReLU(),
-                    nn.Conv2d(256, 128, 5, 2, 2)
+                    nn.Conv2d(64, 256, 3, 1, 1),
+                    nn.ReLU(),
+                    nn.Conv2d(256, 512, 3, 2, 1),
                 )
                 self.bin = Binarizer()
                 self.decoder = nn.Sequential(
-                    nn.ConvTranspose2d(128, 64, 2, 2),
+                    nn.ConvTranspose2d(32, 128, 3, 1, 1),
                     nn.ReLU(),
-                    nn.ConvTranspose2d(64, 256, 5, 2, 2, output_padding=1),
+                    nn.ConvTranspose2d(128, 512, 2, 2),
                     nn.ReLU(),
-                    nn.ConvTranspose2d(256, 3, 1, 1),
+                    nn.ConvTranspose2d(512, 512, 2, 2),
+                    nn.ReLU(),
+                    nn.ConvTranspose2d(512, 3, 1, 1),
                     nn.ReLU()
                 )
 
@@ -294,55 +299,6 @@ class AutoEnc:
             print_exc()
 
     @staticmethod
-    def _save_metric_plot(img_path, folder, metrics_proxy, bpp_proxy, pos,
-                          metrics):
-        """ Method that saves a scatter plot related to an image. """
-        try:
-            for curr_metric, curr_bpp in zip(metrics_proxy, bpp_proxy):
-                cont = 0
-                while not curr_metric[pos] or not curr_bpp[pos]:
-                    time.sleep(1)
-                    cont += 1
-                    if cont > 100:
-                        AutoEnc._timeout_msg(AutoEnc._save_metric_plot,
-                                             img_path)
-                        return
-
-            curr_metric = list(map(lambda e: e[pos], metrics_proxy))
-            curr_bpp = list(map(lambda e: e[pos][0], bpp_proxy))
-
-            fig, ax = plt.subplots()
-            plt.xlabel('bpp')
-            plt.ylabel(str(metrics))
-            plt.grid(True)
-            for bpp, metric in zip(curr_bpp, curr_metric):
-                plt.plot(bpp, metric, marker='o', markersize=6, linewidth=2)
-            legend = list(map(lambda s: str(s), Codecs))
-            plt.legend(legend, loc='upper left')
-            img_size = ImgProc.get_size(img_path)
-            plt.title(str(img_path.name) + ', {} x {}'.format(*img_size))
-
-            min_bpp, max_bpp = np.amin(curr_bpp), np.amax(curr_bpp)
-            min_metric, max_metric = np.amin(curr_metric), np.amax(curr_metric)
-            plt.xticks(np.linspace(min_bpp, max_bpp, 20))
-            plt.xticks(rotation=90)
-            plt.yticks(np.linspace(min_metric, max_metric, 20))
-
-            if min_bpp != max_bpp:
-                plt.xlim(min_bpp, max_bpp)
-            if min_metric != max_metric:
-                plt.ylim(min_metric, max_metric)
-            ax.xaxis.set_major_formatter(FormatStrFormatter('%.3f'))
-            ax.yaxis.set_major_formatter(FormatStrFormatter('%.3f'))
-            plt.tight_layout()
-            plot_name = folder / (img_path.stem + '_plot_' +
-                                  str(metrics) + Path(img_path.name).suffix)
-            plt.savefig(str(plot_name), dpi=360)
-            plt.close()
-        except Exception:
-            print_exc()
-
-    @staticmethod
     def get_out_pathname(img_path, save_folder, ext='.png'):
         """ Construct an output pathname based on original image path """
         img_path = Path(img_path)
@@ -359,6 +315,22 @@ class AutoEnc:
         if 'mom' in param_groups:
             param_groups['mom'] = mom
 
+    def _train_loop(self, data):
+        st = self.st
+
+        data = data.to(self.device)
+        # Zero the gradients
+        st.autoenc_opt[0].zero_grad()
+        # ===================forward=====================
+        # Prediction of the model
+        output, _ = st.autoenc[0](data)
+        # ===================backward=====================
+        # Backward pass:compute gradient of the loss with respect to all
+        # the learnable parameters of the model.
+        # Compute loss
+        loss = st.loss(output, data)
+        return loss
+
     def _train(self):
         """ Function that trains the model. """
         setproctitle('python3 - _train')
@@ -374,17 +346,7 @@ class AutoEnc:
             print('Epoch {}/{}'.format(x + 1, epochs))
             print('-' * 50)
             for batch_idx, (data, _) in enumerate(gen):
-                data = data.to(self.device)
-                # Zero the gradients
-                st.autoenc_opt[0].zero_grad()
-                # ===================forward=====================
-                # Prediction of the model
-                output, _ = st.autoenc[0](data)
-                # ===================backward=====================
-                # Backward pass:compute gradient of the loss with respect to all
-                # the learnable parameters of the model.
-                # Compute loss
-                loss = st.loss(output, data)
+                loss = self._train_loop(data)
                 # Update optimizer's parameters
                 loss.backward()
                 st.autoenc_opt[0].step()

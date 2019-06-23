@@ -40,11 +40,10 @@ class Binarizer(nn.Module):
     """ Torch Layer that implements binarization as in Toderici's article:
     Variable Rate Image Compression with Recurrent Neural Networks
     https://arxiv.org/abs/1511.06085.
-    There's no stochasticity as proposed in that work.
     """
     def __init__(self):
         super(Binarizer, self).__init__()
-        self.conv = nn.Conv2d(128, 128, 1, bias=False)
+        self.conv = nn.Conv2d(512, 32, kernel_size=1)
         self.sign = Sign()
 
     def forward(self, x):
