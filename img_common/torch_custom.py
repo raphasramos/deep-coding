@@ -15,8 +15,8 @@ class Noise(Function):
         if is_training:
             prob = inpt.new(inpt.size()).uniform_()
             x = inpt.clone()
-            x[(1 - inpt) / 2 <= prob] = 1
-            x[(1 - inpt) / 2 > prob] = -1
+            x[1 - inpt <= prob] = 1
+            x[1 - inpt > prob] = 0
             return x
         else:
             return inpt.sign()
@@ -45,8 +45,9 @@ class Binarizer(nn.Module):
         super(Binarizer, self).__init__()
         self.conv = nn.Conv2d(512, 32, kernel_size=1)
         self.sign = Sign()
+        self.act = nn.ReLU()
 
     def forward(self, x):
-        feat = self.conv(x)
-        x = torch.tanh(feat)
+        x = self.conv(x)
+        x = self.act(x)
         return self.sign(x)

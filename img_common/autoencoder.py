@@ -100,8 +100,8 @@ class AutoEnc:
                                num_workers=self.run_cfg['workers'])
         }
 
-        gen['train'] = Generator(shape, run['train']), data_loader['train']
-        gen['test'] = Generator(shape, run['test']), data_loader['test']
+        gen['train'] = data_loader['train']
+        gen['test'] = Generator(shape, run['test'], self.run_cfg['queue_size'])
         gen['img'] = img_transform
         return gen
 
@@ -148,7 +148,7 @@ class AutoEnc:
             if conf['lr_politics']['schedule'] else Schedules('constant').value
         st.opt_schedules.append(schedules(
             conf['lr_politics']['lr'],
-            len(self.generators[str(st.exec_mode)][1]), run['epochs']))
+            len(self.generators['train']), run['epochs']))
         st.autoenc_opt.append(optimizer(model.parameters(),
                                         conf['lr_politics']['lr']))
         st.loss = Losses(conf['loss']).value
@@ -255,22 +255,44 @@ class AutoEnc:
     def _handle_output(self):
         """ Routine executed to handle the output of the model """
         setproctitle('python3 - _handle_output')
-        gen = self.generators[str(self.st.exec_mode)][0]
+        gen = self.generators['test']
         out_folder = self._create_out_folder()
         img_pathnames = list(gen.get_db_files_pathnames())
         pools, bpps, metrics = self._instantiate_shared_variables(
             len(img_pathnames))
-
+        curr_patches = [np.empty((0, *self.auto_cfg['input_shape'][1:]))]
+        curr_latents = []
+        stop = False
         for img_num, img in enumerate(img_pathnames):
             # TODO: the collector doesn't work if called later. The memory is
             #  not release by python. Investigate why. It would be good to call
             #  it less frequently.
             if img_num % 100 == 0:
                 gc.collect()
-            data = self.st.out_queue.get()
-            model_data, latents = data[0], data[1]
+            n_patches = ImgProc.calc_n_patches(img, gen.get_patch_size())
+            patches_count = len(curr_patches[0][0])
+            while patches_count < n_patches:
+                model_data, model_latents = self.st.out_queue.get()
+                if model_data.size == 0:
+                    stop = True
+                    break
+                curr_patches.append(model_data)
+                curr_latents.append(model_latents)
+                del model_data, model_latents
+                patches_count += len(curr_patches[-1][0])
+            if stop and patches_count < n_patches:
+                break
+            curr_patches = np.concatenate(curr_patches, axis=1)
+            patches, curr_patches = np.array_split(curr_patches, [n_patches], 1)
+            curr_patches = [curr_patches]
+
+            curr_latents = np.concatenate(curr_latents, axis=1)
+            latents, curr_latents = np.array_split(curr_latents, [n_patches], 1)
+            curr_latents = [curr_latents]
+            latents = latents.reshape((latents.shape[0], -1))
+
             AutoEnc._codecs_out_routines(pools, img, img_num, bpps, metrics,
-                                         latents, model_data, out_folder)
+                                         latents, patches, out_folder)
         list(map(lambda p: p.close(), pools))
         list(map(lambda p: p.join(), pools))
         AutoEnc._save_out_analysis(img_pathnames, out_folder, bpps, metrics)
@@ -335,7 +357,7 @@ class AutoEnc:
         """ Function that trains the model. """
         setproctitle('python3 - _train')
         st, conf, run = self.st, self.auto_cfg, self.run_cfg
-        gen = self.generators[str(st.exec_mode)][1]
+        gen = self.generators[str(st.exec_mode)]
 
         epochs = run['epochs']
         # Execution of the model
@@ -363,7 +385,8 @@ class AutoEnc:
         """ Function that tests the model. """
         setproctitle('python3 - _test')
         st, conf, run = self.st, self.auto_cfg, self.run_cfg
-        gen = self.generators[str(st.exec_mode)][1]
+        gen = self.generators[str(st.exec_mode)]
+        gen.start()
 
         st.out_queue = Manager().Queue(run['queue_size'])
         patch_proc = Process(target=AutoEnc._handle_output, args=(self,))
@@ -373,22 +396,23 @@ class AutoEnc:
         iter_str = '{:d}/' + str(len(gen)) + ': {}'
         mean_loss = 0.
         st.autoenc[0].eval()
-        for batch_idx, (data, _) in enumerate(gen):
+        for st.step in range(1, gen.get_iter() + 1):
+            data = gen.get_batch()
             data = data.to(self.device)
             # Prediction of the model
             output, latents = st.autoenc[0](data)
             # Compute loss
             loss = st.loss(output, data)
-            print(iter_str.format(batch_idx + 1, str(loss.item())))
+            print(iter_str.format(st.step, str(loss.item())))
             AutoEnc._clear_last_lines()
-            for j in range(output.size()[0]):
-                put = [np.array(
-                    self.generators['img'](output.cpu().data[j]))] + \
-                      [latents.cpu().data[j].numpy()]
-                st.out_queue.put(put)
+            put = [np.array(output.cpu().data.numpy())] + \
+                  [latents.cpu().data.numpy()]
+            st.out_queue.put(put)
             mean_loss += loss.item()
+        st.out_queue.put([np.array([]), np.array([])])
         mean_loss /= len(gen)
         print("Avg loss: {}".format(mean_loss))
+        gen.stop()
         patch_proc.join()
 
     def test_model(self):

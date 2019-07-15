@@ -180,3 +180,47 @@ class ImgProc:
         with Image.open(path) as img_ref:
             width, height = img_ref.size
         return width, height
+
+    @staticmethod
+    def reconstruct_image(patches, width, height):
+        """ Method that receives a 1D array of patches and the dimensions of
+            the image and reconstruct the image based on the patches array
+        """
+        if len(patches) == 1:
+            # Patch has the size of the image
+            img = np.squeeze(patches, axis=0)
+            return img
+
+        patch_size = patches[0].shape[0]
+        colors = 1
+        if len(patches[0].shape) > 2:
+            colors = patches.shape[3]
+        p_rows = np.ceil(height / patch_size).astype(int)
+        p_columns = np.ceil(width / patch_size).astype(int)
+        round_height = p_rows * patch_size
+        round_width = p_columns * patch_size
+
+        # First index changing fastest (reshape a grid of patches)
+        img = patches.reshape(p_rows, p_columns, patch_size, patch_size,
+                              colors)
+        # Rows and columns near one another (for numpy to order them correctly)
+        img = img.swapaxes(1, 2).reshape(round_height, round_width, colors)
+        img = img[:height, :width]
+        return img
+
+    @staticmethod
+    def calc_n_patches(img_ref, patch_size):
+        """ Calculates the number of patches images with this height and
+            widht considering the padding """
+        if isinstance(img_ref, (PosixPath, str)):
+            img = Image.open(img_ref)
+            width, height = img.size
+        elif isinstance(img_ref, list):
+            width, height = img_ref
+        else:
+            width, height = img_ref
+
+        line_patches = np.ceil(height / patch_size).astype(int)
+        column_patches = np.ceil(width / patch_size).astype(int)
+        num_of_patches = line_patches * column_patches
+        return num_of_patches
